@@ -7,11 +7,7 @@ import jakarta.validation.constraints.Size;
 import lombok.*;
 
 @Entity
-@Table(name = "jv_snapshot", indexes = {
-    @Index(name = "idx_jv_snapshot_managed_type", columnList = "managed_type"),
-    @Index(name = "idx_jv_snapshot_global_id", columnList = "global_id_fk"),
-    @Index(name = "idx_jv_snapshot_commit", columnList = "commit_fk")
-})
+@Table(name = "jv_snapshot")
 @Getter
 @Setter
 @Builder

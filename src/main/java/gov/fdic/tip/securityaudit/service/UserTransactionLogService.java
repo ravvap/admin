@@ -6,6 +6,7 @@ import gov.fdic.tip.securityaudit.dto.UserTransactionLogDto;
 import gov.fdic.tip.securityaudit.entity.JvCommit;
 import gov.fdic.tip.securityaudit.entity.JvGlobalId;
 import gov.fdic.tip.securityaudit.entity.JvSnapshot;
+import gov.fdic.tip.securityaudit.repository.JvCommitRepository;
 import gov.fdic.tip.securityaudit.repository.JvGlobalIdRepository;
 import gov.fdic.tip.securityaudit.repository.JvSnapshotRepository;
 import jakarta.persistence.criteria.Join;
@@ -20,26 +21,17 @@ import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
-/**
- * Service implementation for handling User Transaction Logs backed by JaVers audit tables
- * (jv_snapshot, jv_global_id, jv_commit).
- * 
- * Provides dynamic filtering, pagination, JSON state parsing, versioning, and change tracking
- * (INITIAL vs UPDATE states, changed properties, reason codes, descriptions, and metadata).
- */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class UserTransactionLogService {
 
     private final JvSnapshotRepository snapshotRepository;
-    private final JvGlobalIdRepository globalIdRepository; // Optional if using join specs
+    private final JvGlobalIdRepository globalIdRepository;
+    private final JvCommitRepository commitRepository; // Optional if joining commit
     private final ObjectMapper objectMapper;
 
     public Page<UserTransactionLogDto> getUserTransactions(
@@ -52,35 +44,57 @@ public class UserTransactionLogService {
             String assessmentPeriod,
             Pageable pageable
     ) {
+        // If a user search term is provided, we can pre-fetch matching global IDs 
+        // to filter snapshots by their global_id_fk cleanly.
+        List<Long> matchingGlobalIdPks = null;
+        if (user != null && !user.isBlank()) {
+            String pattern = "%" + user.trim().toLowerCase() + "%";
+            matchingGlobalIdPks = globalIdRepository.findAll().stream()
+                    .filter(g -> (g.getLocalId() != null && g.getLocalId().toLowerCase().contains(user.trim().toLowerCase())) ||
+                                 (g.getTypeName() != null && g.getTypeName().toLowerCase().contains(user.trim().toLowerCase())))
+                    .map(JvGlobalId::getGlobalIdPk)
+                    .collect(Collectors.toList());
+            
+            // If no global ID matches, and state also might not contain it, handle empty case
+            if (matchingGlobalIdPks.isEmpty() && user != null) {
+                // We'll still allow state matching via specification
+            }
+        }
+
+        final List<Long> globalIdPksFilter = matchingGlobalIdPks;
+
         Specification<JvSnapshot> spec = (root, query, cb) -> {
             List<Predicate> predicates = new ArrayList<>();
-            Join<JvSnapshot, JvGlobalId> globalIdJoin = root.join("globalIdFk", JoinType.LEFT); // Or map entity relationship
-            Join<JvSnapshot, JvCommit> commitJoin = root.join("commitFk", JoinType.LEFT);
-
-            if (user != null && !user.isBlank()) {
-                String pattern = "%" + user.trim().toLowerCase() + "%";
-                predicates.add(cb.or(
-                        cb.like(cb.lower(globalIdJoin.get("localId")), pattern),
-                        cb.like(cb.lower(globalIdJoin.get("typeName")), pattern),
-                        cb.like(cb.lower(root.get("state")), pattern)
-                ));
-            }
 
             if (transactionType != null && !transactionType.isBlank() && !transactionType.equalsIgnoreCase("All")) {
                 predicates.add(cb.equal(cb.upper(root.get("type")), transactionType.toUpperCase()));
             }
 
-            if (changedFrom != null) {
-                predicates.add(cb.greaterThanOrEqualTo(commitJoin.get("commitDate"), changedFrom));
-            }
-            if (changedTo != null) {
-                predicates.add(cb.lessThanOrEqualTo(commitJoin.get("commitDate"), changedTo));
+            if (user != null && !user.isBlank()) {
+                String pattern = "%" + user.trim().toLowerCase() + "%";
+                Predicate stateMatch = cb.like(cb.lower(root.get("state")), pattern);
+                
+                if (globalIdPksFilter != null && !globalIdPksFilter.isEmpty()) {
+                    Predicate globalIdMatch = root.get("globalIdFk").in(globalIdPksFilter);
+                    predicates.add(cb.or(globalIdMatch, stateMatch));
+                } else {
+                    predicates.add(stateMatch);
+                }
             }
 
             return cb.and(predicates.toArray(new Predicate[0]));
         };
 
         Page<JvSnapshot> snapshotPage = snapshotRepository.findAll(spec, pageable);
+
+        // Batch fetch related global IDs and commits for the current page results to optimize performance
+        Set<Long> globalIdFks = snapshotPage.getContent().stream()
+                .map(JvSnapshot::getGlobalIdFk)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        
+        Map<Long, JvGlobalId> globalIdMap = globalIdRepository.findAllById(globalIdFks).stream()
+                .collect(Collectors.toMap(JvGlobalId::getGlobalIdPk, g -> g));
 
         List<UserTransactionLogDto> dtos = snapshotPage.getContent().stream().map(snapshot -> {
             Map<String, Object> currentState = parseJson(snapshot.getState());
@@ -91,10 +105,12 @@ public class UserTransactionLogService {
                         .ifPresent(prev -> previousState.putAll(parseJson(prev.getState())));
             }
 
-            JvGlobalId globalId = globalIdRepository.findById(snapshot.getGlobalIdFk()).orElse(null);
+            JvGlobalId globalId = globalIdMap.get(snapshot.getGlobalIdFk());
 
             String certNumVal = currentState.get("certNum") != null ? String.valueOf(currentState.get("certNum")) : null;
             String assessmentPeriodVal = currentState.get("assessmentPeriod") != null ? String.valueOf(currentState.get("assessmentPeriod")) : null;
+            String reasonCodeVal = currentState.get("transactionReasonCode") != null ? String.valueOf(currentState.get("transactionReasonCode")) : null;
+            String descriptionVal = currentState.get("transactionDescription") != null ? String.valueOf(currentState.get("transactionDescription")) : null;
 
             if (certNum != null && !certNum.isBlank() && (certNumVal == null || !certNumVal.contains(certNum))) {
                 return null;
@@ -108,14 +124,16 @@ public class UserTransactionLogService {
                     .type(snapshot.getType())
                     .version(snapshot.getVersion())
                     .recordType(globalId != null ? globalId.getTypeName() : null)
-                    .recordId(globalId != null ? globalId.getLocalId() : null)
+                    .recordId(globalId != null ? String.valueOf(globalId.getLocalId()) : null)
                     .changedProperties(snapshot.getChangedProperties())
                     .certNum(certNumVal)
                     .assessmentPeriod(assessmentPeriodVal)
+                    .transactionReasonCode(reasonCodeVal)
+                    .transactionDescription(descriptionVal)
                     .previousValues(previousState)
                     .currentValue(currentState)
                     .build();
-        }).filter(dto -> dto != null).collect(Collectors.toList());
+        }).filter(Objects::nonNull).collect(Collectors.toList());
 
         return new PageImpl<>(dtos, pageable, snapshotPage.getTotalElements());
     }
