@@ -1,6 +1,9 @@
 package gov.fdic.tip.securityaudit.repository;
 
 import gov.fdic.tip.securityaudit.entity.JvSnapshot;
+
+import java.util.Optional;
+
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -11,4 +14,6 @@ import org.springframework.stereotype.Repository;
 public interface JvSnapshotRepository extends JpaRepository<JvSnapshot, Long>, JpaSpecificationExecutor<JvSnapshot> {
     
     Page<JvSnapshot> findByManagedType(String managedType, Pageable pageable);
+    
+    Optional<JvSnapshot> findByGlobalIdFkAndVersion(Long globalIdFk, Long version);
 }
