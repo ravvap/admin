@@ -1,26 +1,27 @@
 package gov.fdic.tip.securityaudit.service;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.stream.Collectors;
-
+import gov.fdic.tip.domain.AppUser;
+import gov.fdic.tip.securityaudit.dto.SecurityProfileReportDto;
+import gov.fdic.tip.securityaudit.repository.AppUserRepository;
+import jakarta.persistence.criteria.Predicate;
+import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
-import gov.fdic.tip.securityaudit.dto.SecurityProfileReportDto;
-import gov.fdic.tip.securityaudit.entity.AppUser;
-import gov.fdic.tip.securityaudit.repository.AppUserRepository;
-import jakarta.persistence.criteria.Predicate;
-import lombok.RequiredArgsConstructor;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
 public class SecurityProfileReportService {
 
     private final AppUserRepository appUserRepository;
+    private final JdbcTemplate jdbcTemplate;
 
     public Page<SecurityProfileReportDto> getSecurityProfileReport(
             String search,
@@ -29,11 +30,10 @@ public class SecurityProfileReportService {
             String status,
             Pageable pageable
     ) {
-        // Build dynamic specification based on UI search filters
         Specification<AppUser> spec = (root, query, criteriaBuilder) -> {
             List<Predicate> predicates = new ArrayList<>();
 
-            // 1. Search filter (matches username or display name)
+            // 1. Search filter (username or display name)
             if (search != null && !search.isBlank()) {
                 String likePattern = "%" + search.trim().toLowerCase() + "%";
                 Predicate usernameMatch = criteriaBuilder.like(criteriaBuilder.lower(root.get("username")), likePattern);
@@ -41,7 +41,7 @@ public class SecurityProfileReportService {
                 predicates.add(criteriaBuilder.or(usernameMatch, nameMatch));
             }
 
-            // 2. Status filter (e.g., Active, Disabled, Training Pending)[cite: 40]
+            // 2. Status filter
             if (status != null && !status.isBlank() && !status.equalsIgnoreCase("All")) {
                 predicates.add(criteriaBuilder.equal(criteriaBuilder.lower(root.get("status")), status.toLowerCase()));
             }
@@ -56,12 +56,12 @@ public class SecurityProfileReportService {
                     String determinedType = determineAccountType(user);
                     String currentRoles = fetchRolesForUser(user.getId());
 
-                    // Filter by Account Type if provided (Human, Service, Unconfirmed)[cite: 40]
+                    // Filter by Account Type if provided (Human, Service, Unconfirmed)
                     if (type != null && !type.isBlank() && !type.equalsIgnoreCase("All") && !determinedType.equalsIgnoreCase(type)) {
                         return null; 
                     }
 
-                    // Filter by Role if provided[cite: 40]
+                    // Filter by Role if provided
                     if (role != null && !role.isBlank() && !role.equalsIgnoreCase("Any role") && !currentRoles.contains(role)) {
                         return null;
                     }
@@ -95,8 +95,18 @@ public class SecurityProfileReportService {
         return "Unconfirmed";
     }
 
+    /**
+     * Dynamically fetches assigned role codes (e.g., "ASA", "SYS") for a given user ID 
+     * by joining user_role and app_role tables.
+     */
     private String fetchRolesForUser(Long userId) {
-        // Mock or integrate repository call to fetch actual roles from user_role/app_role tables[cite: 41]
-        return "ASA"; 
+        String sql = "SELECT r.code FROM app_role r JOIN user_role ur ON r.id = ur.role_id WHERE ur.user_id = ?";
+        List<String> roles = jdbcTemplate.queryForList(sql, new Object[]{userId}, String.class);
+        
+        if (roles == null || roles.isEmpty()) {
+            return "";
+        }
+        // Returns comma-separated roles if a user holds multiple roles (e.g., "ASA, SYS")
+        return String.join(", ", roles);
     }
 }
