@@ -31,77 +31,109 @@ public class SecurityProfileReportService {
             String status,
             Pageable pageable
     ) {
-        Specification<AppUser> spec = (root, query, cb) -> {
-            List<Predicate> predicates = new ArrayList<>();
+        StringBuilder sql = new StringBuilder(
+            "SELECT u.display_name, u.first_name, u.last_name, u.username, u.entra_id, u.status, " +
+            "u.created_at, u.last_login_at, u.training_completed_date, u.training_due_date, " +
+            "u.updated_at, u.created_by, u.updated_by, " +
+            "STRING_AGG(r.code, ', ') AS current_roles " +
+            "FROM app_user u " +
+            "LEFT JOIN user_role ur ON u.id = ur.user_id " +
+            "LEFT JOIN app_role r ON ur.role_id = r.id " +
+            "WHERE 1=1 "
+        );
 
-            // Exclude soft-deleted users if applicable
-            predicates.add(cb.isNull(root.get("deletedAt")));
+        List<Object> params = new ArrayList<>();
 
-            // Search filter (User ID / Username or Display Name)
-            if (search != null && !search.isBlank()) {
-                String likePattern = "%" + search.trim().toLowerCase() + "%";
-                Predicate usernameMatch = cb.like(cb.lower(root.get("username")), likePattern);
-                Predicate nameMatch = cb.like(cb.lower(root.get("displayName")), likePattern);
-                predicates.add(cb.or(usernameMatch, nameMatch));
-            }
-
-            // Status filter
-            if (status != null && !status.isBlank() && !status.equalsIgnoreCase("All")) {
-                predicates.add(cb.equal(cb.lower(root.get("status")), status.toLowerCase().trim()));
-            }
-
-            return cb.and(predicates.toArray(new Predicate[0]));
-        };
-
-        Page<AppUser> userPage = appUserRepository.findAll(spec, pageable);
-
-        List<SecurityProfileReportDto> dtos = new ArrayList<>();
-
-        for (AppUser user : userPage.getContent()) {
-            String determinedType = determineAccountType(user);
-            String currentRoles = fetchRolesForUser(user.getId());
-            String computedStatus = user.getStatus() != null && !user.getStatus().isBlank() 
-                                     ? user.getStatus() 
-                                     : (Boolean.TRUE.equals(user.getIsActive()) ? "Active" : "Disabled");
-
-            // Filter by Account Type
-            if (type != null && !type.isBlank() && !type.equalsIgnoreCase("All") && !determinedType.equalsIgnoreCase(type)) {
-                continue;
-            }
-
-            // Filter by Role
-            if (role != null && !role.isBlank() && !role.equalsIgnoreCase("Any role") && !currentRoles.toLowerCase().contains(role.toLowerCase())) {
-                continue;
-            }
-
-            // Correct mapping for Display Name
-            String displayName = user.getDisplayName();
-            if (displayName == null || displayName.isBlank()) {
-                if (user.getLastName() != null && user.getFirstName() != null) {
-                    displayName = user.getLastName() + ", " + user.getFirstName();
-                } else {
-                    displayName = user.getUsername();
-                }
-            }
-
-            SecurityProfileReportDto dto = SecurityProfileReportDto.builder()
-                    .user(displayName)
-                    .userId(user.getUsername()) // Fix: Uses username (e.g., JPRICE, GPRATT)
-                    .type(determinedType)
-                    .currentRoles(currentRoles)  // Fix: Fetches assigned role codes from user_role
-                    .status(computedStatus)      // Fix: Returns explicit DB status
-                    .roleStartedOn(user.getCreatedAt() != null ? user.getCreatedAt().toLocalDate() : null)
-                    .lastAccessed(user.getLastLoginAt())
-                    .lastTrainingCompleted(user.getTrainingCompletedDate() != null ? user.getTrainingCompletedDate().toLocalDate() : null)
-                    .trainingDue(user.getTrainingDueDate() != null ? user.getTrainingDueDate().toLocalDate() : null)
-                    .lastModifiedOn(user.getUpdatedAt() != null ? user.getUpdatedAt() : user.getCreatedAt())
-                    .lastModifiedBy(user.getUpdatedBy() != null ? user.getUpdatedBy() : user.getCreatedBy())
-                    .build();
-
-            dtos.add(dto);
+        // 1. Search Filter (Username or Display Name)
+        if (search != null && !search.isBlank()) {
+            sql.append(" AND (u.username ILIKE ? OR u.display_name ILIKE ? OR u.first_name ILIKE ? OR u.last_name ILIKE ?) ");
+            String pattern = "%" + search.trim() + "%";
+            params.add(pattern);
+            params.add(pattern);
+            params.add(pattern);
+            params.add(pattern);
         }
 
-        return new PageImpl<>(dtos, pageable, userPage.getTotalElements());
+        // 2. Status Filter
+        if (status != null && !status.isBlank() && !status.equalsIgnoreCase("All")) {
+            sql.append(" AND u.status ILIKE ? ");
+            params.add(status.trim());
+        }
+
+        sql.append(" GROUP BY u.id ");
+
+        // 3. Role Filter (HAVING clause for aggregated roles)
+        if (role != null && !role.isBlank() && !role.equalsIgnoreCase("Any role")) {
+            sql.append(" HAVING STRING_AGG(r.code, ', ') ILIKE ? ");
+            params.add("%" + role.trim() + "%");
+        }
+
+        // Total count query for pagination
+        String countSql = "SELECT COUNT(*) FROM (" + sql.toString() + ") AS filtered_count";
+        Long total = jdbcTemplate.queryForObject(countSql, Long.class, params.toArray());
+        if (total == null) {
+            total = 0L;
+        }
+
+        // Add Sorting and Pagination
+        sql.append(" ORDER BY u.username ASC LIMIT ? OFFSET ?");
+        params.add(pageable.getPageSize());
+        params.add((int) pageable.getOffset());
+
+        List<SecurityProfileReportDto> reportDtos = jdbcTemplate.query(
+        	    sql.toString(), 
+        	    (rs, rowNum) -> {
+        	        String firstName = rs.getString("first_name");
+        	        String lastName = rs.getString("last_name");
+        	        String displayName = rs.getString("display_name");
+        	        String username = rs.getString("username");
+        	        String entraId = rs.getString("entra_id");
+        	        String dbStatus = rs.getString("status");
+        	        String roles = rs.getString("current_roles");
+
+        	        // Format Display Name
+        	        String formattedUser;
+        	        if (displayName != null && !displayName.isBlank()) {
+        	            formattedUser = displayName;
+        	        } else if (lastName != null && firstName != null) {
+        	            formattedUser = lastName + ", " + firstName;
+        	        } else {
+        	            formattedUser = username;
+        	        }
+
+        	        // Determine Account Type
+        	        String accountType = "Unconfirmed";
+        	        if (username != null && username.toUpperCase().startsWith("SVC")) {
+        	            accountType = "Service";
+        	        } else if (entraId != null && !entraId.isBlank()) {
+        	            accountType = "Human";
+        	        }
+
+        	        return SecurityProfileReportDto.builder()
+        	                .user(formattedUser)
+        	                .userId(username)
+        	                .type(accountType)
+        	                .currentRoles(roles != null ? roles : "")
+        	                .status(dbStatus != null ? dbStatus : "Active")
+        	                .roleStartedOn(rs.getTimestamp("created_at") != null ? rs.getTimestamp("created_at").toLocalDateTime().toLocalDate() : null)
+        	                .lastAccessed(rs.getTimestamp("last_login_at") != null ? rs.getTimestamp("last_login_at").toLocalDateTime() : null)
+        	                .lastTrainingCompleted(rs.getDate("training_completed_date") != null ? rs.getDate("training_completed_date").toLocalDate() : null)
+        	                .trainingDue(rs.getDate("training_due_date") != null ? rs.getDate("training_due_date").toLocalDate() : null)
+        	                .lastModifiedOn(rs.getTimestamp("updated_at") != null ? rs.getTimestamp("updated_at").toLocalDateTime() : rs.getTimestamp("created_at").toLocalDateTime())
+        	                .lastModifiedBy(rs.getString("updated_by") != null ? rs.getString("updated_by") : rs.getString("created_by"))
+        	                .build();
+        	    }, 
+        	    params.toArray() // 👈 Passed at the end as varargs instead of an explicit Object[] middle argument
+        	);
+
+        // Optional post-query filter for Account Type
+        if (type != null && !type.isBlank() && !type.equalsIgnoreCase("All")) {
+            reportDtos = reportDtos.stream()
+                    .filter(dto -> dto.getType().equalsIgnoreCase(type))
+                    .toList();
+        }
+
+        return new PageImpl<>(reportDtos, pageable, total);
     }
 
     private String determineAccountType(AppUser user) {
