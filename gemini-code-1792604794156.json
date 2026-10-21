@@ -1,0 +1,193 @@
+{
+  "info": {
+    "name": "TIP Security & Audit Reporting Module - Updated",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Access Logs",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/security-audit/access-logs?startDate=2026-01-01T00:00:00&endDate=2026-03-31T23:59:59&page=0&size=25",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "security-audit",
+            "access-logs"
+          ],
+          "query": [
+            {
+              "key": "startDate",
+              "value": "2026-01-01T00:00:00"
+            },
+            {
+              "key": "endDate",
+              "value": "2026-03-31T23:59:59"
+            },
+            {
+              "key": "page",
+              "value": "0"
+            },
+            {
+              "key": "size",
+              "value": "25"
+            }
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Security Profile Reports",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/security-audit/security-profiles?search=price&type=Human&role=ASA&status=Active&page=0&size=25",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "security-audit",
+            "security-profiles"
+          ],
+          "query": [
+            {
+              "key": "search",
+              "value": "price"
+            },
+            {
+              "key": "type",
+              "value": "Human"
+            },
+            {
+              "key": "role",
+              "value": "ASA"
+            },
+            {
+              "key": "status",
+              "value": "Active"
+            },
+            {
+              "key": "page",
+              "value": "0"
+            },
+            {
+              "key": "size",
+              "value": "25"
+            }
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Security Transaction Logs",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/security-audit/security-transactions?page=0&size=25",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "security-audit",
+            "security-transactions"
+          ],
+          "query": [
+            {
+              "key": "page",
+              "value": "0"
+            },
+            {
+              "key": "size",
+              "value": "25"
+            }
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "User Transaction Logs (JaVers Snapshot)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/security-audit/user-transactions?user=JPRICE&transactionType=UPDATE&changedFrom=2026-01-01T00:00:00&changedTo=2026-12-31T23:59:59&page=0&size=25",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "security-audit",
+            "user-transactions"
+          ],
+          "query": [
+            {
+              "key": "user",
+              "value": "JPRICE",
+              "description": "User search filter (matches local_id or type_name)"
+            },
+            {
+              "key": "fieldName",
+              "value": "",
+              "description": "Specific property changed filter (optional)",
+              "disabled": true
+            },
+            {
+              "key": "transactionType",
+              "value": "UPDATE",
+              "description": "INITIAL or UPDATE"
+            },
+            {
+              "key": "changedFrom",
+              "value": "2026-01-01T00:00:00",
+              "description": "Start timestamp filter"
+            },
+            {
+              "key": "changedTo",
+              "value": "2026-12-31T23:59:59",
+              "description": "End timestamp filter"
+            },
+            {
+              "key": "certNum",
+              "value": "",
+              "description": "Certificate number filter (optional)",
+              "disabled": true
+            },
+            {
+              "key": "assessmentPeriod",
+              "value": "",
+              "description": "Assessment period filter (optional)",
+              "disabled": true
+            },
+            {
+              "key": "page",
+              "value": "0"
+            },
+            {
+              "key": "size",
+              "value": "25"
+            }
+          ]
+        }
+      },
+      "response": []
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080",
+      "type": "string"
+    }
+  ]
+}
