@@ -12,6 +12,7 @@ import org.springframework.data.jpa.domain.Specification;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -30,83 +31,101 @@ public class SecurityProfileReportService {
             String status,
             Pageable pageable
     ) {
-        Specification<AppUser> spec = (root, query, criteriaBuilder) -> {
+        Specification<AppUser> spec = (root, query, cb) -> {
             List<Predicate> predicates = new ArrayList<>();
 
-            // 1. Search filter (username or display name)
+            // Exclude soft-deleted users if applicable
+            predicates.add(cb.isNull(root.get("deletedAt")));
+
+            // Search filter (User ID / Username or Display Name)
             if (search != null && !search.isBlank()) {
                 String likePattern = "%" + search.trim().toLowerCase() + "%";
-                Predicate usernameMatch = criteriaBuilder.like(criteriaBuilder.lower(root.get("username")), likePattern);
-                Predicate nameMatch = criteriaBuilder.like(criteriaBuilder.lower(root.get("displayName")), likePattern);
-                predicates.add(criteriaBuilder.or(usernameMatch, nameMatch));
+                Predicate usernameMatch = cb.like(cb.lower(root.get("username")), likePattern);
+                Predicate nameMatch = cb.like(cb.lower(root.get("displayName")), likePattern);
+                predicates.add(cb.or(usernameMatch, nameMatch));
             }
 
-            // 2. Status filter
+            // Status filter
             if (status != null && !status.isBlank() && !status.equalsIgnoreCase("All")) {
-                predicates.add(criteriaBuilder.equal(criteriaBuilder.lower(root.get("status")), status.toLowerCase()));
+                predicates.add(cb.equal(cb.lower(root.get("status")), status.toLowerCase().trim()));
             }
 
-            return criteriaBuilder.and(predicates.toArray(new Predicate[0]));
+            return cb.and(predicates.toArray(new Predicate[0]));
         };
 
         Page<AppUser> userPage = appUserRepository.findAll(spec, pageable);
 
-        List<SecurityProfileReportDto> reportDtos = userPage.getContent().stream()
-                .map(user -> {
-                    String determinedType = determineAccountType(user);
-                    String currentRoles = fetchRolesForUser(user.getId());
+        List<SecurityProfileReportDto> dtos = new ArrayList<>();
 
-                    // Filter by Account Type if provided (Human, Service, Unconfirmed)
-                    if (type != null && !type.isBlank() && !type.equalsIgnoreCase("All") && !determinedType.equalsIgnoreCase(type)) {
-                        return null; 
-                    }
+        for (AppUser user : userPage.getContent()) {
+            String determinedType = determineAccountType(user);
+            String currentRoles = fetchRolesForUser(user.getId());
+            String computedStatus = user.getStatus() != null && !user.getStatus().isBlank() 
+                                     ? user.getStatus() 
+                                     : (Boolean.TRUE.equals(user.getIsActive()) ? "Active" : "Disabled");
 
-                    // Filter by Role if provided
-                    if (role != null && !role.isBlank() && !role.equalsIgnoreCase("Any role") && !currentRoles.contains(role)) {
-                        return null;
-                    }
+            // Filter by Account Type
+            if (type != null && !type.isBlank() && !type.equalsIgnoreCase("All") && !determinedType.equalsIgnoreCase(type)) {
+                continue;
+            }
 
-                    return SecurityProfileReportDto.builder()
-                            .user(user.getDisplayName() != null ? user.getDisplayName() : user.getLastName() + ", " + user.getFirstName())
-                            .userId(user.getUsername())
-                            .type(determinedType)
-                            .currentRoles(currentRoles)
-                            .status(user.getStatus() != null ? user.getStatus() : "Active")
-                            .roleStartedOn(user.getCreatedAt() != null ? user.getCreatedAt().toLocalDate() : null)
-                            .lastAccessed(user.getLastLoginAt())
-                            .lastTrainingCompleted(user.getTrainingCompletedDate() != null ? user.getTrainingCompletedDate().toLocalDate() : null)
-                            .trainingDue(user.getTrainingDueDate() != null ? user.getTrainingDueDate().toLocalDate() : null)
-                            .lastModifiedOn(user.getUpdatedAt())
-                            .lastModifiedBy(user.getUpdatedBy() != null ? user.getUpdatedBy() : user.getCreatedBy())
-                            .build();
-                })
-                .filter(dto -> dto != null)
-                .collect(Collectors.toList());
+            // Filter by Role
+            if (role != null && !role.isBlank() && !role.equalsIgnoreCase("Any role") && !currentRoles.toLowerCase().contains(role.toLowerCase())) {
+                continue;
+            }
 
-        return new PageImpl<>(reportDtos, pageable, userPage.getTotalElements());
+            // Correct mapping for Display Name
+            String displayName = user.getDisplayName();
+            if (displayName == null || displayName.isBlank()) {
+                if (user.getLastName() != null && user.getFirstName() != null) {
+                    displayName = user.getLastName() + ", " + user.getFirstName();
+                } else {
+                    displayName = user.getUsername();
+                }
+            }
+
+            SecurityProfileReportDto dto = SecurityProfileReportDto.builder()
+                    .user(displayName)
+                    .userId(user.getUsername()) // Fix: Uses username (e.g., JPRICE, GPRATT)
+                    .type(determinedType)
+                    .currentRoles(currentRoles)  // Fix: Fetches assigned role codes from user_role
+                    .status(computedStatus)      // Fix: Returns explicit DB status
+                    .roleStartedOn(user.getCreatedAt() != null ? user.getCreatedAt().toLocalDate() : null)
+                    .lastAccessed(user.getLastLoginAt())
+                    .lastTrainingCompleted(user.getTrainingCompletedDate() != null ? user.getTrainingCompletedDate().toLocalDate() : null)
+                    .trainingDue(user.getTrainingDueDate() != null ? user.getTrainingDueDate().toLocalDate() : null)
+                    .lastModifiedOn(user.getUpdatedAt() != null ? user.getUpdatedAt() : user.getCreatedAt())
+                    .lastModifiedBy(user.getUpdatedBy() != null ? user.getUpdatedBy() : user.getCreatedBy())
+                    .build();
+
+            dtos.add(dto);
+        }
+
+        return new PageImpl<>(dtos, pageable, userPage.getTotalElements());
     }
 
     private String determineAccountType(AppUser user) {
-        if (user.getEntraId() != null && !user.getEntraId().isBlank()) {
-            return "Human";
-        } else if (user.getUsername() != null && user.getUsername().toUpperCase().contains("SVC")) {
+        if (user.getUsername() != null && user.getUsername().toUpperCase().startsWith("SVC")) {
             return "Service";
+        } else if (user.getEntraId() != null && !user.getEntraId().isBlank()) {
+            return "Human";
         }
         return "Unconfirmed";
     }
 
     /**
-     * Dynamically fetches assigned role codes (e.g., "ASA", "SYS") for a given user ID 
-     * by joining user_role and app_role tables.
+     * Directly queries user_role and app_role tables to get roles for a given user ID.
      */
     private String fetchRolesForUser(Long userId) {
+        if (userId == null) {
+            return "";
+        }
         String sql = "SELECT r.code FROM app_role r JOIN user_role ur ON r.id = ur.role_id WHERE ur.user_id = ?";
-        List<String> roles = jdbcTemplate.queryForList(sql, new Object[]{userId}, String.class);
+        List<String> roles = jdbcTemplate.queryForList(sql, String.class, userId);
         
         if (roles == null || roles.isEmpty()) {
             return "";
         }
-        // Returns comma-separated roles if a user holds multiple roles (e.g., "ASA, SYS")
         return String.join(", ", roles);
     }
 }
