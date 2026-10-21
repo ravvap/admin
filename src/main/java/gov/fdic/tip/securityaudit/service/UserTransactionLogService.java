@@ -70,14 +70,26 @@ public class UserTransactionLogService {
 
         final List<Long> globalIdPksFilter = matchingGlobalIdPks;
 
-        // Build JPA Specification for filtering snapshots
+        // Build JPA Specification including transaction type, user search, and commit date filters
         Specification<JvSnapshot> spec = (root, query, cb) -> {
             List<Predicate> predicates = new ArrayList<>();
+
+            // Join with jv_commit to enable date range filtering
+            Join<JvSnapshot, JvCommit> commitJoin = root.join("commit", JoinType.LEFT);
 
             if (transactionType != null && !transactionType.isBlank() && !transactionType.equalsIgnoreCase("All")) {
                 predicates.add(cb.equal(cb.upper(root.get("type")), transactionType.toUpperCase()));
             }
 
+            // Date Range Filters (changedFrom / changedTo)
+            if (changedFrom != null) {
+                predicates.add(cb.greaterThanOrEqualTo(commitJoin.get("commitDate"), changedFrom));
+            }
+            if (changedTo != null) {
+                predicates.add(cb.lessThanOrEqualTo(commitJoin.get("commitDate"), changedTo));
+            }
+
+            // User Search Filter
             if (user != null && !user.isBlank()) {
                 String pattern = "%" + user.trim().toLowerCase() + "%";
                 Predicate stateMatch = cb.like(cb.lower(root.get("state")), pattern);
@@ -110,7 +122,6 @@ public class UserTransactionLogService {
             Map<String, Object> currentState = parseJson(snapshot.getState());
             Map<String, Object> previousState = new HashMap<>();
 
-            // Fetch previous version state if this is an update record
             if ("UPDATE".equalsIgnoreCase(snapshot.getType()) && snapshot.getVersion() > 1) {
                 snapshotRepository.findByGlobalIdFkAndVersion(snapshot.getGlobalIdFk(), snapshot.getVersion() - 1)
                         .ifPresent(prev -> previousState.putAll(parseJson(prev.getState())));
@@ -118,13 +129,11 @@ public class UserTransactionLogService {
 
             JvGlobalId globalId = globalIdMap.get(snapshot.getGlobalIdFk());
 
-            // Extract metadata fields from JSON state map
             String certNumVal = currentState.get("certNum") != null ? String.valueOf(currentState.get("certNum")) : null;
             String assessmentPeriodVal = currentState.get("assessmentPeriod") != null ? String.valueOf(currentState.get("assessmentPeriod")) : null;
             String reasonCodeVal = currentState.get("transactionReasonCode") != null ? String.valueOf(currentState.get("transactionReasonCode")) : null;
             String descriptionVal = currentState.get("transactionDescription") != null ? String.valueOf(currentState.get("transactionDescription")) : null;
 
-            // Optional filter checks
             if (certNum != null && !certNum.isBlank() && (certNumVal == null || !certNumVal.contains(certNum))) {
                 continue;
             }
@@ -132,12 +141,17 @@ public class UserTransactionLogService {
                 continue;
             }
 
+            // Get execution timestamp from the joined commit entity
+            String commitTimestamp = (snapshot.getCommit() != null && snapshot.getCommit().getCommitDate() != null) 
+                    ? snapshot.getCommit().getCommitDate().toString() : null;
+
             UserTransactionLogDto dto = UserTransactionLogDto.builder()
                     .snapshotPk(snapshot.getSnapshotPk())
                     .type(snapshot.getType())
                     .version(snapshot.getVersion())
                     .recordType(globalId != null ? globalId.getTypeName() : null)
                     .recordId(globalId != null ? String.valueOf(globalId.getLocalId()) : null)
+                    .transactionExecuted(commitTimestamp)
                     .changedProperties(snapshot.getChangedProperties())
                     .certNum(certNumVal)
                     .assessmentPeriod(assessmentPeriodVal)

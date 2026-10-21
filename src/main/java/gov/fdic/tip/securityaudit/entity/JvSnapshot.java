@@ -30,7 +30,7 @@ public class JvSnapshot {
     private Long version;
 
     @Column(name = "state", columnDefinition = "TEXT")
-    private String state; // JSON string storing entity state
+    private String state;
 
     @Column(name = "changed_properties", columnDefinition = "TEXT")
     private String changedProperties;
@@ -43,6 +43,11 @@ public class JvSnapshot {
     @Column(name = "global_id_fk")
     private Long globalIdFk;
 
-    @Column(name = "commit_fk")
+    @Column(name = "commit_fk", insertable = false, updatable = false)
     private Long commitFk;
+
+    // 👈 Map commit_fk as a ManyToOne relationship so we can filter by commitDate
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "commit_fk")
+    private JvCommit commit;
 }
