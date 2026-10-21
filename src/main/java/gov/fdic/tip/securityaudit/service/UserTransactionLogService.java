@@ -34,6 +34,19 @@ public class UserTransactionLogService {
     private final JvCommitRepository commitRepository; // Optional if joining commit
     private final ObjectMapper objectMapper;
 
+    /**
+     * Retrieves a paginated list of user transaction logs based on dynamic search criteria.
+     *
+     * @param user             the user search term (matches local_id, type_name, or state json)
+     * @param fieldName        specific property changed
+     * @param transactionType  INITIAL or UPDATE
+     * @param changedFrom      start timestamp filter
+     * @param changedTo        end timestamp filter
+     * @param certNum          certificate number filter
+     * @param assessmentPeriod assessment period filter
+     * @param pageable         pagination and sorting information
+     * @return a page of UserTransactionLogDto objects
+     */
     public Page<UserTransactionLogDto> getUserTransactions(
             String user,
             String fieldName,
@@ -44,25 +57,20 @@ public class UserTransactionLogService {
             String assessmentPeriod,
             Pageable pageable
     ) {
-        // If a user search term is provided, we can pre-fetch matching global IDs 
-        // to filter snapshots by their global_id_fk cleanly.
+        // Pre-fetch matching global IDs if a user search term is provided
         List<Long> matchingGlobalIdPks = null;
         if (user != null && !user.isBlank()) {
-            String pattern = "%" + user.trim().toLowerCase() + "%";
+            String pattern = user.trim().toLowerCase();
             matchingGlobalIdPks = globalIdRepository.findAll().stream()
-                    .filter(g -> (g.getLocalId() != null && g.getLocalId().toLowerCase().contains(user.trim().toLowerCase())) ||
-                                 (g.getTypeName() != null && g.getTypeName().toLowerCase().contains(user.trim().toLowerCase())))
+                    .filter(g -> (g.getLocalId() != null && String.valueOf(g.getLocalId()).toLowerCase().contains(pattern)) ||
+                                 (g.getTypeName() != null && g.getTypeName().toLowerCase().contains(pattern)))
                     .map(JvGlobalId::getGlobalIdPk)
                     .collect(Collectors.toList());
-            
-            // If no global ID matches, and state also might not contain it, handle empty case
-            if (matchingGlobalIdPks.isEmpty() && user != null) {
-                // We'll still allow state matching via specification
-            }
         }
 
         final List<Long> globalIdPksFilter = matchingGlobalIdPks;
 
+        // Build JPA Specification for filtering snapshots
         Specification<JvSnapshot> spec = (root, query, cb) -> {
             List<Predicate> predicates = new ArrayList<>();
 
@@ -87,7 +95,7 @@ public class UserTransactionLogService {
 
         Page<JvSnapshot> snapshotPage = snapshotRepository.findAll(spec, pageable);
 
-        // Batch fetch related global IDs and commits for the current page results to optimize performance
+        // Batch fetch related global IDs to optimize performance
         Set<Long> globalIdFks = snapshotPage.getContent().stream()
                 .map(JvSnapshot::getGlobalIdFk)
                 .filter(Objects::nonNull)
@@ -96,10 +104,13 @@ public class UserTransactionLogService {
         Map<Long, JvGlobalId> globalIdMap = globalIdRepository.findAllById(globalIdFks).stream()
                 .collect(Collectors.toMap(JvGlobalId::getGlobalIdPk, g -> g));
 
-        List<UserTransactionLogDto> dtos = snapshotPage.getContent().stream().map(snapshot -> {
+        List<UserTransactionLogDto> dtos = new ArrayList<>();
+
+        for (JvSnapshot snapshot : snapshotPage.getContent()) {
             Map<String, Object> currentState = parseJson(snapshot.getState());
             Map<String, Object> previousState = new HashMap<>();
 
+            // Fetch previous version state if this is an update record
             if ("UPDATE".equalsIgnoreCase(snapshot.getType()) && snapshot.getVersion() > 1) {
                 snapshotRepository.findByGlobalIdFkAndVersion(snapshot.getGlobalIdFk(), snapshot.getVersion() - 1)
                         .ifPresent(prev -> previousState.putAll(parseJson(prev.getState())));
@@ -107,19 +118,21 @@ public class UserTransactionLogService {
 
             JvGlobalId globalId = globalIdMap.get(snapshot.getGlobalIdFk());
 
+            // Extract metadata fields from JSON state map
             String certNumVal = currentState.get("certNum") != null ? String.valueOf(currentState.get("certNum")) : null;
             String assessmentPeriodVal = currentState.get("assessmentPeriod") != null ? String.valueOf(currentState.get("assessmentPeriod")) : null;
             String reasonCodeVal = currentState.get("transactionReasonCode") != null ? String.valueOf(currentState.get("transactionReasonCode")) : null;
             String descriptionVal = currentState.get("transactionDescription") != null ? String.valueOf(currentState.get("transactionDescription")) : null;
 
+            // Optional filter checks
             if (certNum != null && !certNum.isBlank() && (certNumVal == null || !certNumVal.contains(certNum))) {
-                return null;
+                continue;
             }
             if (assessmentPeriod != null && !assessmentPeriod.isBlank() && (assessmentPeriodVal == null || !assessmentPeriodVal.contains(assessmentPeriod))) {
-                return null;
+                continue;
             }
 
-            return UserTransactionLogDto.builder()
+            UserTransactionLogDto dto = UserTransactionLogDto.builder()
                     .snapshotPk(snapshot.getSnapshotPk())
                     .type(snapshot.getType())
                     .version(snapshot.getVersion())
@@ -133,7 +146,9 @@ public class UserTransactionLogService {
                     .previousValues(previousState)
                     .currentValue(currentState)
                     .build();
-        }).filter(Objects::nonNull).collect(Collectors.toList());
+
+            dtos.add(dto);
+        }
 
         return new PageImpl<>(dtos, pageable, snapshotPage.getTotalElements());
     }
