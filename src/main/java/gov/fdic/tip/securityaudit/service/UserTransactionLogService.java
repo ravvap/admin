@@ -3,25 +3,21 @@ package gov.fdic.tip.securityaudit.service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import gov.fdic.tip.securityaudit.dto.UserTransactionLogDto;
-import gov.fdic.tip.securityaudit.entity.JvCommit;
-import gov.fdic.tip.securityaudit.entity.JvGlobalId;
-import gov.fdic.tip.securityaudit.entity.JvSnapshot;
-import gov.fdic.tip.securityaudit.repository.JvCommitRepository;
-import gov.fdic.tip.securityaudit.repository.JvGlobalIdRepository;
-import gov.fdic.tip.securityaudit.repository.JvSnapshotRepository;
-import jakarta.persistence.criteria.Join;
-import jakarta.persistence.criteria.JoinType;
-import jakarta.persistence.criteria.Predicate;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.jpa.domain.Specification;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
+import java.sql.Timestamp;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -29,130 +25,111 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class UserTransactionLogService {
 
-    private final JvSnapshotRepository snapshotRepository;
-    private final JvGlobalIdRepository globalIdRepository;
-    private final JvCommitRepository commitRepository; // Optional if joining commit
+    private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
 
-    /**
-     * Retrieves a paginated list of user transaction logs based on dynamic search criteria.
-     *
-     * @param user             the user search term (matches local_id, type_name, or state json)
-     * @param fieldName        specific property changed
-     * @param transactionType  INITIAL or UPDATE
-     * @param changedFrom      start timestamp filter
-     * @param changedTo        end timestamp filter
-     * @param certNum          certificate number filter
-     * @param assessmentPeriod assessment period filter
-     * @param pageable         pagination and sorting information
-     * @return a page of UserTransactionLogDto objects
-     */
     public Page<UserTransactionLogDto> getUserTransactions(
             String user,
             String fieldName,
             String transactionType,
-            LocalDateTime changedFrom,
-            LocalDateTime changedTo,
+            LocalDate changedFrom,
+            LocalDate changedTo,
             String certNum,
             String assessmentPeriod,
             Pageable pageable
     ) {
-        // Pre-fetch matching global IDs if a user search term is provided
-        List<Long> matchingGlobalIdPks = null;
-        if (user != null && !user.isBlank()) {
-            String pattern = user.trim().toLowerCase();
-            matchingGlobalIdPks = globalIdRepository.findAll().stream()
-                    .filter(g -> (g.getLocalId() != null && String.valueOf(g.getLocalId()).toLowerCase().contains(pattern)) ||
-                                 (g.getTypeName() != null && g.getTypeName().toLowerCase().contains(pattern)))
-                    .map(JvGlobalId::getGlobalIdPk)
-                    .collect(Collectors.toList());
+        StringBuilder sql = new StringBuilder(
+                "SELECT s.snapshot_pk, s.type, s.version, s.state, s.changed_properties, " +
+                "g.type_name, g.local_id, c.commit_date " +
+                "FROM jv_snapshot s " +
+                "JOIN jv_global_id g ON s.global_id_fk = g.global_id_pk " +
+                "LEFT JOIN jv_commit c ON s.commit_fk = c.commit_pk WHERE 1=1"
+        );
+
+        List<Object> params = new ArrayList<>();
+
+        // 1. Transaction Type Filter
+        if (transactionType != null && !transactionType.isBlank() && !transactionType.equalsIgnoreCase("All")) {
+            sql.append(" AND s.type = ?");
+            params.add(transactionType.toUpperCase());
         }
 
-        final List<Long> globalIdPksFilter = matchingGlobalIdPks;
+        // 2. Date Range Filters (MM/dd/yyyy input converted to LocalDateTime boundaries)
+        if (changedFrom != null) {
+            sql.append(" AND c.commit_date >= ?");
+            params.add(Timestamp.valueOf(changedFrom.atStartOfDay()));
+        }
+        if (changedTo != null) {
+            sql.append(" AND c.commit_date <= ?");
+            params.add(Timestamp.valueOf(changedTo.atTime(23, 59, 59)));
+        }
 
-        // Build JPA Specification including transaction type, user search, and commit date filters
-        Specification<JvSnapshot> spec = (root, query, cb) -> {
-            List<Predicate> predicates = new ArrayList<>();
+        // Fetch matching rows
+        List<UserTransactionLogDto> allRecords = jdbcTemplate.query(sql.toString(), params.toArray(), (rs, rowNum) -> {
+            Long snapshotPk = rs.getLong("snapshot_pk");
+            String type = rs.getString("type");
+            Long version = rs.getLong("version");
+            String stateJson = rs.getString("state");
+            String changedProps = rs.getString("changed_properties");
+            String typeName = rs.getString("type_name");
+            String localId = rs.getString("local_id");
+            Timestamp commitDate = rs.getTimestamp("commit_date");
 
-            // Join with jv_commit to enable date range filtering
-            Join<JvSnapshot, JvCommit> commitJoin = root.join("commit", JoinType.LEFT);
+            Map<String, Object> currentState = parseJson(stateJson);
+            Map<String, Object> previousState = new HashMap<>();
 
-            if (transactionType != null && !transactionType.isBlank() && !transactionType.equalsIgnoreCase("All")) {
-                predicates.add(cb.equal(cb.upper(root.get("type")), transactionType.toUpperCase()));
+            // Fetch previous state for updates if version > 1
+            if ("UPDATE".equalsIgnoreCase(type) && version > 1) {
+                previousState = fetchPreviousState(localId, typeName, version - 1);
             }
 
-            // Date Range Filters (changedFrom / changedTo)
-            if (changedFrom != null) {
-                predicates.add(cb.greaterThanOrEqualTo(commitJoin.get("commitDate"), changedFrom));
-            }
-            if (changedTo != null) {
-                predicates.add(cb.lessThanOrEqualTo(commitJoin.get("commitDate"), changedTo));
-            }
+            // Extract metadata from JSON state
+            String certNumVal = currentState.get("certNum") != null ? String.valueOf(currentState.get("certNum")) : null;
+            String assessmentPeriodVal = currentState.get("assessmentPeriod") != null ? String.valueOf(currentState.get("assessmentPeriod")) : null;
+            String reasonCodeVal = currentState.get("transactionReasonCode") != null ? String.valueOf(currentState.get("transactionReasonCode")) :
+                                   (currentState.get("reasonCode") != null ? String.valueOf(currentState.get("reasonCode")) : null);
+            String descriptionVal = currentState.get("transactionDescription") != null ? String.valueOf(currentState.get("transactionDescription")) :
+                                    (currentState.get("description") != null ? String.valueOf(currentState.get("description")) : null);
+            String createdByVal = currentState.get("createdBy") != null ? String.valueOf(currentState.get("createdBy")) : null;
+            String updatedByVal = currentState.get("updatedBy") != null ? String.valueOf(currentState.get("updatedBy")) : null;
 
-            // User Search Filter
+            // 3. User / Creator / Updater Search Filter
             if (user != null && !user.isBlank()) {
-                String pattern = "%" + user.trim().toLowerCase() + "%";
-                Predicate stateMatch = cb.like(cb.lower(root.get("state")), pattern);
-                
-                if (globalIdPksFilter != null && !globalIdPksFilter.isEmpty()) {
-                    Predicate globalIdMatch = root.get("globalIdFk").in(globalIdPksFilter);
-                    predicates.add(cb.or(globalIdMatch, stateMatch));
-                } else {
-                    predicates.add(stateMatch);
+                String searchKeyword = user.trim().toLowerCase();
+                boolean matchesRecordId = (localId != null && localId.toLowerCase().contains(searchKeyword));
+                boolean matchesTypeName = (typeName != null && typeName.toLowerCase().contains(searchKeyword));
+                boolean matchesCreator = (createdByVal != null && createdByVal.toLowerCase().contains(searchKeyword));
+                boolean matchesUpdater = (updatedByVal != null && updatedByVal.toLowerCase().contains(searchKeyword));
+
+                if (!matchesRecordId && !matchesTypeName && !matchesCreator && !matchesUpdater) {
+                    return null;
                 }
             }
 
-            return cb.and(predicates.toArray(new Predicate[0]));
-        };
-
-        Page<JvSnapshot> snapshotPage = snapshotRepository.findAll(spec, pageable);
-
-        // Batch fetch related global IDs to optimize performance
-        Set<Long> globalIdFks = snapshotPage.getContent().stream()
-                .map(JvSnapshot::getGlobalIdFk)
-                .filter(Objects::nonNull)
-                .collect(Collectors.toSet());
-        
-        Map<Long, JvGlobalId> globalIdMap = globalIdRepository.findAllById(globalIdFks).stream()
-                .collect(Collectors.toMap(JvGlobalId::getGlobalIdPk, g -> g));
-
-        List<UserTransactionLogDto> dtos = new ArrayList<>();
-
-        for (JvSnapshot snapshot : snapshotPage.getContent()) {
-            Map<String, Object> currentState = parseJson(snapshot.getState());
-            Map<String, Object> previousState = new HashMap<>();
-
-            if ("UPDATE".equalsIgnoreCase(snapshot.getType()) && snapshot.getVersion() > 1) {
-                snapshotRepository.findByGlobalIdFkAndVersion(snapshot.getGlobalIdFk(), snapshot.getVersion() - 1)
-                        .ifPresent(prev -> previousState.putAll(parseJson(prev.getState())));
-            }
-
-            JvGlobalId globalId = globalIdMap.get(snapshot.getGlobalIdFk());
-
-            String certNumVal = currentState.get("certNum") != null ? String.valueOf(currentState.get("certNum")) : null;
-            String assessmentPeriodVal = currentState.get("assessmentPeriod") != null ? String.valueOf(currentState.get("assessmentPeriod")) : null;
-            String reasonCodeVal = currentState.get("transactionReasonCode") != null ? String.valueOf(currentState.get("transactionReasonCode")) : null;
-            String descriptionVal = currentState.get("transactionDescription") != null ? String.valueOf(currentState.get("transactionDescription")) : null;
-
+            // 4. Optional Certificate & Assessment Period Filters
             if (certNum != null && !certNum.isBlank() && (certNumVal == null || !certNumVal.contains(certNum))) {
-                continue;
+                return null;
             }
             if (assessmentPeriod != null && !assessmentPeriod.isBlank() && (assessmentPeriodVal == null || !assessmentPeriodVal.contains(assessmentPeriod))) {
-                continue;
+                return null;
             }
 
-            // Get execution timestamp from the joined commit entity
-            String commitTimestamp = (snapshot.getCommit() != null && snapshot.getCommit().getCommitDate() != null) 
-                    ? snapshot.getCommit().getCommitDate().toString() : null;
+            // 5. Optional Field Name Filter
+            if (fieldName != null && !fieldName.isBlank()) {
+                boolean matchesField = (changedProps != null && changedProps.contains(fieldName)) || currentState.containsKey(fieldName);
+                if (!matchesField) {
+                    return null;
+                }
+            }
 
-            UserTransactionLogDto dto = UserTransactionLogDto.builder()
-                    .snapshotPk(snapshot.getSnapshotPk())
-                    .type(snapshot.getType())
-                    .version(snapshot.getVersion())
-                    .recordType(globalId != null ? globalId.getTypeName() : null)
-                    .recordId(globalId != null ? String.valueOf(globalId.getLocalId()) : null)
-                    .transactionExecuted(commitTimestamp)
-                    .changedProperties(snapshot.getChangedProperties())
+            return UserTransactionLogDto.builder()
+                    .snapshotPk(snapshotPk)
+                    .type(type)
+                    .version(version)
+                    .recordType(typeName)
+                    .recordId(localId)
+                    .transactionExecuted(commitDate != null ? commitDate.toLocalDateTime().toString() : null)
+                    .changedProperties(changedProps)
                     .certNum(certNumVal)
                     .assessmentPeriod(assessmentPeriodVal)
                     .transactionReasonCode(reasonCodeVal)
@@ -160,11 +137,32 @@ public class UserTransactionLogService {
                     .previousValues(previousState)
                     .currentValue(currentState)
                     .build();
+        });
 
-            dtos.add(dto);
+        // Filter out nulls from criteria matching
+        List<UserTransactionLogDto> filteredList = allRecords.stream()
+                .filter(r -> r != null)
+                .collect(Collectors.toList());
+
+        // Apply Manual Pagination on the filtered list
+        int start = (int) pageable.getOffset();
+        int end = Math.min((start + pageable.getPageSize()), filteredList.size());
+        
+        List<UserTransactionLogDto> pageContent = start > filteredList.size() ? new ArrayList<>() : filteredList.subList(start, end);
+
+        return new PageImpl<>(pageContent, pageable, filteredList.size());
+    }
+
+    private Map<String, Object> fetchPreviousState(String localId, String typeName, Long targetVersion) {
+        try {
+            String sql = "SELECT s.state FROM jv_snapshot s " +
+                         "JOIN jv_global_id g ON s.global_id_fk = g.global_id_pk " +
+                         "WHERE g.local_id = ? AND g.type_name = ? AND s.version = ?";
+            String stateJson = jdbcTemplate.queryForObject(sql, new Object[]{localId, typeName, targetVersion}, String.class);
+            return parseJson(stateJson);
+        } catch (Exception e) {
+            return new HashMap<>();
         }
-
-        return new PageImpl<>(dtos, pageable, snapshotPage.getTotalElements());
     }
 
     private Map<String, Object> parseJson(String jsonStr) {
