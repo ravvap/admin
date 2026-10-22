@@ -1,0 +1,199 @@
+{
+  "info": {
+    "_postman_id": "a2b3c4d5-e6f7-8901-2345-6789abcdef01",
+    "name": "User Transaction Log API",
+    "description": "Postman Collection for FDIC TIP User Transaction Log microservice.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "bearerToken",
+      "value": "YOUR_JWT_TOKEN_HERE",
+      "type": "string"
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{bearerToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "Record User Transaction (Insert)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"userId\": \"john.doe@fdic.gov\",\n  \"changedAt\": \"2026-10-22T14:20:00Z\",\n  \"certNumber\": 12345,\n  \"assessmentPeriod\": \"2025 Q3\",\n  \"fieldName\": \"totalAssets\",\n  \"transactionType\": \"UPDATE\",\n  \"reasonCode\": \"CORR_01\",\n  \"reasonDescription\": \"Routine quarterly assessment correction\",\n  \"previousValue\": \"5000000\",\n  \"currentValue\": \"5500000\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/user-transactions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "user-transactions"
+          ]
+        },
+        "description": "Appends a new user transaction log entry."
+      },
+      "response": []
+    },
+    {
+      "name": "Search / List Transactions",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/user-transactions?page=0&size=12&sort=changedAt,desc",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "user-transactions"
+          ],
+          "query": [
+            {
+              "key": "page",
+              "value": "0",
+              "description": "Page index (0-indexed)"
+            },
+            {
+              "key": "size",
+              "value": "12",
+              "description": "Items per page"
+            },
+            {
+              "key": "sort",
+              "value": "changedAt,desc",
+              "description": "Field and direction to sort by"
+            },
+            {
+              "key": "user",
+              "value": "john.doe@fdic.gov",
+              "disabled": true
+            },
+            {
+              "key": "certNumber",
+              "value": "12345",
+              "disabled": true
+            },
+            {
+              "key": "fieldName",
+              "value": "totalAssets",
+              "disabled": true
+            },
+            {
+              "key": "transactionType",
+              "value": "UPDATE",
+              "disabled": true
+            },
+            {
+              "key": "assessmentPeriod",
+              "value": "2025 Q3",
+              "disabled": true
+            }
+          ]
+        },
+        "description": "Retrieves paged transaction logs with optional filter parameters."
+      },
+      "response": []
+    },
+    {
+      "name": "Get Transaction By ID",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/user-transactions/:id",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "user-transactions",
+            ":id"
+          ],
+          "variable": [
+            {
+              "key": "id",
+              "value": "1",
+              "description": "Transaction Log ID"
+            }
+          ]
+        },
+        "description": "Fetches a single transaction log entry by ID."
+      },
+      "response": []
+    },
+    {
+      "name": "Get Filter Options",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/user-transactions/filter-options",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "user-transactions",
+            "filter-options"
+          ]
+        },
+        "description": "Returns list of available assessment periods, field names, and transaction types for filtering."
+      },
+      "response": []
+    },
+    {
+      "name": "Export Transactions to CSV",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/user-transactions/export",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "user-transactions",
+            "export"
+          ]
+        },
+        "description": "Downloads transaction log records matching criteria as a CSV file."
+      },
+      "response": []
+    }
+  ]
+}

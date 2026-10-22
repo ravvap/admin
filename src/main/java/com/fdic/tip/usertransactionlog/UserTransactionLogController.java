@@ -38,6 +38,12 @@ public class UserTransactionLogController {
 
     private final UserTransactionLogService service;
 
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    public UserTransactionLogResponse recordTransaction(@Valid @RequestBody RecordUserTransactionCommand command) {
+        return service.recordTransaction(command);
+    }
+
     @GetMapping
     public PagedResponse<UserTransactionLogResponse> search(
             @Valid @ModelAttribute UserTransactionLogFilter filter,

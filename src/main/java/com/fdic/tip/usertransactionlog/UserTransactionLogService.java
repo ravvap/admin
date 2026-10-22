@@ -38,6 +38,26 @@ public class UserTransactionLogService {
 
     private final UserTransactionLogRepository repository;
 
+    
+    @Transactional
+    public UserTransactionLogResponse recordTransaction(RecordUserTransactionCommand command) {
+        UserTransactionLog entity = UserTransactionLog.builder()
+                .userId(command.userId())
+                .changedAt(command.changedAt())
+                .certNumber(command.certNumber())
+                .assessmentPeriod(command.assessmentPeriod())
+                .fieldName(command.fieldName())
+                .transactionType(command.transactionType())
+                .reasonCode(command.reasonCode())
+                .reasonDescription(command.reasonDescription())
+                .previousValue(command.previousValue())
+                .currentValue(command.currentValue())
+                .build();
+
+        UserTransactionLog saved = repository.save(entity);
+        return mapToResponse(saved);
+    }
+    
     @Transactional(readOnly = true)
     public PagedResponse<UserTransactionLogResponse> search(UserTransactionLogFilter filter, Pageable pageable) {
         validateFilter(filter);
