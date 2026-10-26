@@ -21,7 +21,6 @@ import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.Objects;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -45,9 +44,6 @@ public class SecurityTransactionLogService {
             String transactionType,
             Pageable pageable
     ) {
-        Objects.requireNonNull(fromDate, "fromDate is required");
-        Objects.requireNonNull(toDate, "toDate is required");
-
         List<SecurityTransactionLogRow> rows = repository.findSecurityTransactionGrid(
                 fromDate,
                 toDate,

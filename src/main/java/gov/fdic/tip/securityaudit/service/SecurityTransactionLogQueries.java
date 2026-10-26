@@ -58,7 +58,8 @@ public final class SecurityTransactionLogQueries {
                 WHERE b.event_type IN (
                         'AUTH.USER_PROVISIONED_JIT', 'AUTH.ADD_ROLE(S)', 'AUTH.REMOVE_ROLE(S)',
                         'AUTH.ADD_OVERRIDE(S)', 'AUTH.DENY_PAGE', 'AUTH.UPDATE_USER', 'AUTH.DISABLE_USER')
-                  AND (b."timestamp" AT TIME ZONE 'America/New_York') < CAST(:toDate AS date) + 1
+                  AND (CAST(:toDate AS date) IS NULL
+                       OR (b."timestamp" AT TIME ZONE 'America/New_York') < CAST(:toDate AS date) + 1)
             ),
             grid AS (
                 SELECT
@@ -83,7 +84,8 @@ public final class SecurityTransactionLogQueries {
                 g.details                                         AS "details",
                 COUNT(*) OVER ()                                  AS "totalCount"
             FROM grid g
-            WHERE CAST(g.ts_et AS date) BETWEEN CAST(:fromDate AS date) AND CAST(:toDate AS date)
+            WHERE (CAST(:fromDate AS date) IS NULL OR CAST(g.ts_et AS date) >= CAST(:fromDate AS date))
+              AND (CAST(:toDate AS date) IS NULL OR CAST(g.ts_et AS date) <= CAST(:toDate AS date))
               AND (CAST(:affectedUser AS text) IS NULL
                    OR g.affected_user ILIKE '%' || CAST(:affectedUser AS text) || '%'
                    OR g.user_name     ILIKE '%' || CAST(:affectedUser AS text) || '%')
